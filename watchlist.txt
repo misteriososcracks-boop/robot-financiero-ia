@@ -1,0 +1,9 @@
+# Símbolos para reporte AUTOMÁTICO diario (edita este archivo en GitHub)
+MSFT
+QQQ
+NVDA
+GOOGL
+AMZN
+SPY
+VTI
+AAPL

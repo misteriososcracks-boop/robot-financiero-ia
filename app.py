@@ -1,138 +1,127 @@
-"""Robot Financiero — beta pública: análisis educativo de símbolos configurables."""
-import re
+"""Robot Financiero IA 2.0 — beta educativa pública."""
 from datetime import datetime
+from io import StringIO
 
 import pandas as pd
 import streamlit as st
-import yfinance as yf
 
-DEFAULTS = ["MSFT", "QQQ", "NVDA", "GOOGL", "AMZN", "SPY", "VTI", "AAPL"]
-RISK = {"Conservador": 0.005, "Moderado": 0.01, "Alto": 0.015}
+from analysis import (RISK, analyze_history, defaults_from_file, fetch_history,
+                      fetch_usdmxn, public_fields, validate_symbols)
 
-st.set_page_config(page_title="Robot Financiero IA — Beta", page_icon="📈", layout="wide")
-st.title("📈 Robot Financiero IA")
-st.caption("Beta pública | Análisis técnico de acciones y ETF en dólares estadounidenses")
-st.info("Herramienta educativa con reglas matemáticas. No utiliza aún un modelo de IA predictiva ni ejecuta órdenes. Un puntaje alto no es una probabilidad de ganancia.")
-
-with st.form("analisis"):
-    modo = st.radio("¿Qué quieres analizar?", ["Una acción o ETF", "Comparar varios símbolos"], horizontal=True)
-    simbolo = st.text_input("Escribe el símbolo de la acción o ETF", value="NVDA", help="Ejemplos: AAPL, TSLA, MSFT, NVDA, SPY").strip().upper()
-    varios = st.text_input("Símbolos para comparar, separados por comas", value=", ".join(DEFAULTS), help="Ejemplo: AAPL, MSFT, NVDA, TSLA") if modo == "Comparar varios símbolos" else ""
-    c1, c2 = st.columns(2)
-    with c1:
-        capital = st.number_input("Capital simulado (MXN)", min_value=1000.0, max_value=100000000.0, value=10000.0, step=1000.0)
-    with c2:
-        riesgo = st.selectbox("Nivel de riesgo", list(RISK))
-    enviado = st.form_submit_button("🔎 Analizar", type="primary")
-
-
-def validar_simbolos():
-    raw = [simbolo] if modo == "Una acción o ETF" else varios.split(",")
-    symbols = list(dict.fromkeys(s.strip().upper() for s in raw if s.strip()))
-    if not symbols:
-        raise ValueError("Escribe al menos un símbolo de bolsa.")
-    if len(symbols) > 12:
-        raise ValueError("Para evitar sobrecarga, analiza hasta 12 símbolos a la vez.")
-    for s in symbols:
-        if not re.fullmatch(r"[A-Z0-9^][A-Z0-9.^=-]{0,14}", s):
-            raise ValueError(f"Símbolo no válido: {s}. Usa el ticker bursátil, por ejemplo TSLA.")
-    return symbols
-
+st.set_page_config(page_title="Robot Financiero IA 2.0", page_icon="📈", layout="wide")
+st.title("📈 Robot Financiero IA 2.0")
+st.caption("Acciones y ETF de EE. UU. · Análisis al cierre · Plan condicional para la siguiente sesión")
+st.info("Herramienta educativa basada en reglas técnicas, no en IA predictiva. No ejecuta compras, no garantiza ganar 1% y puede tener precios retrasados.")
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def precios_historicos(symbol):
-    return yf.download(symbol, period="1y", interval="1d", auto_adjust=True, progress=False, threads=False, timeout=15)
-
+def cached_history(symbol):
+    return fetch_history(symbol)
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def tipo_cambio_mxn():
-    data = yf.download("MXN=X", period="5d", interval="1d", auto_adjust=True, progress=False, threads=False, timeout=15)
-    if data.empty:
-        raise ValueError("No se pudo consultar el tipo de cambio USD/MXN.")
-    close = data["Close"]
-    if isinstance(close, pd.DataFrame):
-        close = close.iloc[:, 0]
-    rate = pd.to_numeric(close, errors="coerce").dropna()
-    if rate.empty or float(rate.iloc[-1]) <= 0:
-        raise ValueError("El tipo de cambio disponible no es válido.")
-    return float(rate.iloc[-1])
+def cached_fx():
+    return fetch_usdmxn()
 
+if "watch" not in st.session_state:
+    st.session_state.watch = defaults_from_file()
+if "results" not in st.session_state:
+    st.session_state.results = []
 
-def analizar(symbol, mxn_usd):
-    data = precios_historicos(symbol)
-    if data.empty:
-        raise ValueError("sin datos de precio; revisa si existe el símbolo")
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
-    needed = ["Close", "High", "Low"]
-    if not all(c in data.columns for c in needed):
-        raise ValueError("faltan precios necesarios para el análisis")
-    prices = data[needed].apply(pd.to_numeric, errors="coerce").dropna()
-    if len(prices) < 51:
-        raise ValueError("historial insuficiente (se necesitan 51 sesiones)")
-    close, high, low = prices["Close"], prices["High"], prices["Low"]
-    current = float(close.iloc[-1]); previous = close.shift(1)
-    sma20 = float(close.tail(20).mean()); sma50 = float(close.tail(50).mean())
-    change20 = 100 * (current / float(close.iloc[-21]) - 1)
-    tr = pd.concat([high-low, (high-previous).abs(), (low-previous).abs()], axis=1).max(axis=1)
-    atr = float(tr.tail(14).mean())
-    if current <= 0 or not pd.notna(atr) or atr <= 0:
-        raise ValueError("precio o volatilidad inválidos")
-    score = int(max(0, min(100, round(50 + max(-15, min(15, change20))*1.5 + (15 if current>sma20 else -15) + (10 if sma20>sma50 else -10)))))
-    stop = max(0.01, current - 2*atr)
-    distance = (current-stop)*mxn_usd
-    per_trade_risk = capital*RISK[riesgo]
-    price_mxn = current*mxn_usd
-    shares = max(0.0, min(capital*0.20/price_mxn, per_trade_risk/distance if distance>0 else 0, capital/price_mxn))
-    return {
-        "Símbolo": symbol,
-        "Puntuación (0-100)": score,
-        "Tendencia": "Alcista" if current>sma20>sma50 else "Sin confirmar",
-        "Precio (USD)": round(current, 2),
-        "Cambio 20 sesiones (%)": round(change20, 2),
-        "Media 20 (USD)": round(sma20, 2),
-        "Media 50 (USD)": round(sma50, 2),
-        "ATR 14 (USD)": round(atr, 2),
-        "Stop orientativo (USD)": round(stop, 2),
-        "Fracciones simuladas": round(shares, 4),
-        "Capital simulado (MXN)": round(shares*price_mxn, 2),
-        "Pérdida orientativa al stop (MXN)": round(shares*distance, 2),
-        "Fecha del dato": str(close.index[-1].date()),
-        "Cierre": close,
-    }
+st.subheader("1. Edita tus acciones desde esta página")
+st.caption("Agrega o elimina filas y escribe el símbolo (ej. NVDA, AAPL, TSLA). El cambio es temporal para tu sesión. Descarga tu lista para recuperarla otro día; NO modifica GitHub ni la lista de alertas automáticas.")
+with st.expander("Importar lista CSV (opcional)"):
+    upload = st.file_uploader("Sube un CSV con columna 'Símbolo' o 'symbol'", type="csv")
+    if upload and st.button("Cargar lista del archivo"):
+        try:
+            frame = pd.read_csv(upload)
+            col = next((c for c in frame.columns if c.strip().lower() in ["símbolo", "simbolo", "symbol", "ticker"]), None)
+            if col is None:
+                raise ValueError("El archivo requiere una columna Símbolo o symbol")
+            st.session_state.watch = validate_symbols(frame[col].dropna().astype(str).tolist())
+            st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
 
+edited = st.data_editor(pd.DataFrame({"Símbolo": st.session_state.watch}),
+                        num_rows="dynamic", hide_index=True, use_container_width=True,
+                        key="ticker_editor")
+raw = edited["Símbolo"].fillna("").astype(str).tolist()
+try:
+    symbols = validate_symbols(raw)
+    st.session_state.watch = symbols
+except ValueError as exc:
+    symbols = []
+    st.warning(str(exc))
 
-if enviado:
-    try:
-        symbols = validar_simbolos()
-        with st.spinner("Consultando precios y calculando indicadores..."):
-            usd_mxn = tipo_cambio_mxn()
-            results, errors = [], []
-            for sym in symbols:
-                try:
-                    results.append(analizar(sym, usd_mxn))
-                except Exception as e:
-                    errors.append(f"{sym}: {e}")
-        for e in errors:
-            st.warning(e)
-        if not results:
-            st.error("No fue posible analizar ningún símbolo. Revisa los códigos o intenta más tarde.")
-            st.stop()
-        st.success(f"Análisis completado · Tipo de cambio consultado: {usd_mxn:.2f} MXN/USD")
-        if modo == "Una acción o ETF":
-            r = results[0]
-            a,b,c = st.columns(3)
-            a.metric("Precio (USD)", f"${r['Precio (USD)']:,.2f}", f"{r['Cambio 20 sesiones (%)']:+.2f}% / 20 sesiones")
-            b.metric("Puntuación por reglas", f"{r['Puntuación (0-100)']}/100")
-            c.metric("Tendencia", r["Tendencia"])
-            st.line_chart(r["Cierre"].rename("Cierre ajustado (USD)"))
-            st.write(f"**Stop orientativo:** ${r['Stop orientativo (USD)']:,.2f} USD · **Capital simulado:** ${r['Capital simulado (MXN)']:,.2f} MXN · **Pérdida estimada al stop:** ${r['Pérdida orientativa al stop (MXN)']:,.2f} MXN")
-        else:
-            st.subheader("Comparación de acciones y ETF")
-        rows = [{k:v for k,v in r.items() if k!="Cierre"} for r in results]
-        df = pd.DataFrame(rows).sort_values("Puntuación (0-100)", ascending=False)
-        st.dataframe(df, hide_index=True, use_container_width=True)
-        st.download_button("Descargar resultados CSV", df.to_csv(index=False).encode("utf-8-sig"), file_name=f"analisis_financiero_{datetime.now():%Y%m%d}.csv", mime="text/csv")
-        st.caption("Los datos pueden tener retrasos. El stop es una referencia basada en 2 × ATR(14), no una orden ni un límite de pérdida garantizado. El tamaño simulado admite fracciones de acciones que algunos brókeres no permiten. El puntaje solo resume las reglas técnicas, no pronostica rendimientos.")
-    except Exception as e:
-        st.error(str(e))
+if symbols:
+    csv_content = pd.DataFrame({"Símbolo": symbols}).to_csv(index=False).encode("utf-8-sig")
+    st.download_button("⬇️ Guardar mi lista CSV", csv_content, "mis_acciones.csv", "text/csv")
+
+c1, c2, c3 = st.columns(3)
+with c1:
+    capital = st.number_input("Capital simulado (MXN)", min_value=1000., max_value=100000000., value=10000., step=1000.)
+with c2:
+    risk = st.selectbox("Nivel de riesgo", list(RISK), index=1)
+with c3:
+    commission = st.number_input("Comisión por lado (%)", min_value=0., max_value=5., value=0., step=0.05,
+                                 help="Porcentaje por compra y por venta, por separado.")
+
+col_a, col_b = st.columns([3, 1])
+with col_a:
+    run = st.button("🔎 Analizar precios y buscar entradas", type="primary", use_container_width=True, disabled=not symbols)
+with col_b:
+    if st.button("Actualizar datos", use_container_width=True):
+        cached_history.clear()
+        cached_fx.clear()
+        st.info("Caché borrada. Pulsa Analizar para descargar datos nuevos.")
+
+if run:
+    results, errors = [], []
+    with st.spinner("Descargando cierres y analizando soportes, resistencias y entrada..."):
+        try:
+            usd_mxn = cached_fx()
+        except Exception as exc:
+            usd_mxn = None
+            st.warning(f"No se pudo consultar USD/MXN. El análisis de precios seguirá en USD: {exc}")
+        for symbol in symbols:
+            try:
+                result = analyze_history(symbol, cached_history(symbol), capital, risk, usd_mxn, commission)
+                results.append(result)
+            except Exception as exc:
+                errors.append(f"{symbol}: {exc}")
+    st.session_state.results = results
+    for msg in errors:
+        st.warning(msg)
+    if not results:
+        st.error("No hay resultados válidos; comprueba los símbolos y la fuente de precios.")
+
+results = st.session_state.results
+if results:
+    st.divider()
+    st.subheader("2. Tabla de oportunidades para la próxima sesión")
+    st.caption("'VIGILAR ENTRADA' exige retroceso al nivel indicado y confirmación del rebote; nunca es una compra a mercado. 'NO OPERAR' significa que no hay precio de entrada validado por las reglas.")
+    rows = [public_fields(r) for r in results]
+    df = pd.DataFrame(rows).sort_values(["Señal", "Puntuación"], ascending=[False, False])
+    preferred = ["Símbolo", "Fecha del dato", "Cierre USD", "Tendencia", "Señal", "Puntuación",
+                 "Soporte USD", "Resistencia USD", "Entrada sugerida USD", "Objetivo +1% USD",
+                 "Stop USD", "Riesgo/beneficio", "RSI 14", "MACD mejora", "Volumen vs 20d"]
+    st.dataframe(df[preferred], hide_index=True, use_container_width=True)
+    st.download_button("📥 Descargar análisis completo CSV", df.to_csv(index=False).encode("utf-8-sig"),
+                       f"analisis_robot_{datetime.now():%Y%m%d_%H%M}.csv", "text/csv")
+    st.subheader("3. Justificación y gráfica por acción")
+    selection = st.selectbox("Selecciona una acción", [r["Símbolo"] for r in results])
+    chosen = next(r for r in results if r["Símbolo"] == selection)
+    a, b, c, d = st.columns(4)
+    a.metric("Cierre", f"${chosen['Cierre USD']:,.2f}")
+    b.metric("Soporte", f"${chosen['Soporte USD']:,.2f}")
+    c.metric("Resistencia", f"${chosen['Resistencia USD']:,.2f}" if chosen["Resistencia USD"] else "Sin techo claro")
+    d.metric("Entrada sugerida", f"${chosen['Entrada sugerida USD']:,.2f}" if chosen["Entrada sugerida USD"] else "NO OPERAR")
+    st.line_chart(chosen["_series"].tail(90), use_container_width=True)
+    if chosen["Señal"] == "VIGILAR ENTRADA":
+        st.success(f"Entrada condicional: ${chosen['Entrada sugerida USD']:.2f} USD | Objetivo +1% bruto: ${chosen['Objetivo +1% USD']:.2f} USD | Stop teórico: ${chosen['Stop USD']:.2f} USD | Relación B/R: {chosen['Riesgo/beneficio']:.2f}. Solo vigilar si hay retroceso y confirmación de rebote.")
+    else:
+        st.warning("NO OPERAR: no hay entrada validada en esta sesión. Precio de referencia NO operable para observar futuros retrocesos: "
+                   f"${chosen['Entrada condicional USD']:.2f} USD. Motivos: {chosen['Condiciones']}")
+    st.caption(f"Última vela diaria usada: {chosen['Fecha del dato']}. Los cálculos NO incorporan noticias, resultados trimestrales ni eventos premercado. Un gap puede invalidar la entrada y el stop. La ganancia del 1% es BRUTA y las comisiones, spreads e impuestos pueden reducirla o volverla negativa.")
+
+st.divider()
+st.caption("Lista pública compartida para reportes automáticos: edita watchlist.txt en GitHub. Esta app no guarda la selección entre dispositivos/sesiones ni escribe en el repositorio para evitar que visitantes públicos cambien tus alertas.")
