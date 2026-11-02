@@ -35,6 +35,11 @@ def defaults_from_file(file="watchlist.txt"):
         return DEFAULTS.copy()
 
 
+def symbol_currency(symbol):
+    """Mercados admitidos: títulos sin sufijo de EE. UU. (USD) y .MX (MXN)."""
+    return "MXN" if symbol.upper().endswith(".MX") else "USD"
+
+
 def fetch_history(symbol):
     data = yf.download(symbol, period="1y", interval="1d", auto_adjust=True,
                        progress=False, threads=False, timeout=20)
@@ -171,6 +176,9 @@ def analyze_history(symbol, prices, capital_mxn=10000.0, risk_name="Moderado", m
     signal = "VIGILAR ENTRADA" if actionable else "NO OPERAR"
     # No señalar un precio de compra como ejecutable si filtros no se cumplen.
     display_entry = entry if actionable else None
+    currency = symbol_currency(symbol)
+    # El tipo de cambio solo aplica si la acción cotiza en USD.
+    conversion_to_mxn = 1.0 if currency == "MXN" else mxn_usd
     score = round(max(0, min(100,
         40 + (20 if trend == "Alcista" else -15)
         + (10 if 45 <= rsi <= 72 else -5)
@@ -181,35 +189,36 @@ def analyze_history(symbol, prices, capital_mxn=10000.0, risk_name="Moderado", m
 
     risk_pct = RISK.get(risk_name, RISK["Moderado"])
     shares = 0.0
-    if mxn_usd and actionable and risk_per_share > 0:
+    if conversion_to_mxn and actionable and risk_per_share > 0:
         # Máximo 20% del capital invertido; riesgo por stop según perfil.
-        shares = max(0, min(0.2 * capital_mxn/(entry*mxn_usd),
-                            capital_mxn*risk_pct/(risk_per_share*mxn_usd)))
+        shares = max(0, min(0.2 * capital_mxn/(entry*conversion_to_mxn),
+                            capital_mxn*risk_pct/(risk_per_share*conversion_to_mxn)))
 
     return {
         "Símbolo": symbol,
         "Fecha del dato": str(pd.Timestamp(close.index[-1]).date()),
-        "Cierre USD": round(last, 2),
+        "Moneda": currency,
+        "Cierre": round(last, 2),
         "Tendencia": trend,
         "Puntuación": score,
         "Señal": signal,
-        "Soporte USD": round(support, 2),
-        "Resistencia USD": round(resistance, 2) if resistance_valid else None,
-        "Entrada sugerida USD": display_entry,
-        "Entrada condicional USD": entry,
-        "Objetivo +1% USD": target if actionable else None,
-        "Stop USD": stop if actionable else None,
+        "Soporte": round(support, 2),
+        "Resistencia": round(resistance, 2) if resistance_valid else None,
+        "Entrada sugerida": display_entry,
+        "Entrada condicional": entry,
+        "Objetivo +1%": target if actionable else None,
+        "Stop": stop if actionable else None,
         "Riesgo/beneficio": round(rr, 2),
         "RSI 14": round(rsi, 1),
         "MACD mejora": "Sí" if momentum else "No",
         "Volumen vs 20d": round(vol_ratio, 2) if np.isfinite(vol_ratio) else None,
         "Cambio 20 sesiones %": round(change20, 2),
-        "Media 20 USD": round(sma20, 2),
-        "Media 50 USD": round(sma50, 2),
-        "ATR 14 USD": round(atr, 2),
-        "Fracciones simuladas": round(shares, 4),
-        "Capital simulado MXN": round(shares * entry * mxn_usd, 2) if mxn_usd else None,
-        "Pérdida teórica al stop MXN": round(shares * risk_per_share * mxn_usd, 2) if mxn_usd else None,
+        "Media 20": round(sma20, 2),
+        "Media 50": round(sma50, 2),
+        "ATR 14": round(atr, 2),
+        "Fracciones simuladas": round(shares, 4) if (actionable and conversion_to_mxn) else None,
+        "Capital simulado MXN": round(shares * entry * conversion_to_mxn, 2) if conversion_to_mxn else None,
+        "Pérdida teórica al stop MXN": round(shares * risk_per_share * conversion_to_mxn, 2) if conversion_to_mxn else None,
         "Objetivo bruto %": 1.0,
         "Objetivo neto est. %": round(net_pct, 2),
         "Condiciones": "Esperar retroceso al precio límite y rebote confirmado; cancelar si rompe soporte." if actionable else "; ".join(reasons),

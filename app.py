@@ -10,7 +10,7 @@ from analysis import (RISK, analyze_history, defaults_from_file, fetch_history,
 
 st.set_page_config(page_title="Robot Financiero IA 2.0", page_icon="📈", layout="wide")
 st.title("📈 Robot Financiero IA 2.0")
-st.caption("Acciones y ETF de EE. UU. · Análisis al cierre · Plan condicional para la siguiente sesión")
+st.caption("Acciones y ETF de EE. UU. (USD) y México (MXN) · Análisis al cierre · Plan condicional para la siguiente sesión")
 st.info("Herramienta educativa basada en reglas técnicas, no en IA predictiva. No ejecuta compras, no garantiza ganar 1% y puede tener precios retrasados.")
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -27,7 +27,7 @@ if "results" not in st.session_state:
     st.session_state.results = []
 
 st.subheader("1. Edita tus acciones desde esta página")
-st.caption("Agrega o elimina filas y escribe el símbolo (ej. NVDA, AAPL, TSLA). El cambio es temporal para tu sesión. Descarga tu lista para recuperarla otro día; NO modifica GitHub ni la lista de alertas automáticas.")
+st.caption("Agrega o elimina filas y escribe el símbolo (ej. NVDA, AAPL, GMEXICOB.MX, WALMEX.MX). El cambio es temporal para tu sesión. Descarga tu lista para recuperarla otro día; NO modifica GitHub ni la lista de alertas automáticas.")
 with st.expander("Importar lista CSV (opcional)"):
     upload = st.file_uploader("Sube un CSV con columna 'Símbolo' o 'symbol'", type="csv")
     if upload and st.button("Cargar lista del archivo"):
@@ -81,7 +81,7 @@ if run:
             usd_mxn = cached_fx()
         except Exception as exc:
             usd_mxn = None
-            st.warning(f"No se pudo consultar USD/MXN. El análisis de precios seguirá en USD: {exc}")
+            st.warning(f"No se pudo consultar USD/MXN. Los precios se mostrarán en su moneda original, pero no se calcularán posiciones en MXN para acciones estadounidenses: {exc}")
         for symbol in symbols:
             try:
                 result = analyze_history(symbol, cached_history(symbol), capital, risk, usd_mxn, commission)
@@ -98,12 +98,12 @@ results = st.session_state.results
 if results:
     st.divider()
     st.subheader("2. Tabla de oportunidades para la próxima sesión")
-    st.caption("'VIGILAR ENTRADA' exige retroceso al nivel indicado y confirmación del rebote; nunca es una compra a mercado. 'NO OPERAR' significa que no hay precio de entrada validado por las reglas.")
+    st.caption("Los precios se muestran en la moneda de cotización indicada (MXN o USD). 'VIGILAR ENTRADA' exige retroceso al nivel indicado y confirmación del rebote; nunca es una compra a mercado. 'NO OPERAR' significa que no hay precio de entrada validado por las reglas.")
     rows = [public_fields(r) for r in results]
     df = pd.DataFrame(rows).sort_values(["Señal", "Puntuación"], ascending=[False, False])
-    preferred = ["Símbolo", "Fecha del dato", "Cierre USD", "Tendencia", "Señal", "Puntuación",
-                 "Soporte USD", "Resistencia USD", "Entrada sugerida USD", "Objetivo +1% USD",
-                 "Stop USD", "Riesgo/beneficio", "RSI 14", "MACD mejora", "Volumen vs 20d"]
+    preferred = ["Símbolo", "Moneda", "Fecha del dato", "Cierre", "Tendencia", "Señal", "Puntuación",
+                 "Soporte", "Resistencia", "Entrada sugerida", "Objetivo +1%",
+                 "Stop", "Riesgo/beneficio", "RSI 14", "MACD mejora", "Volumen vs 20d"]
     st.dataframe(df[preferred], hide_index=True, use_container_width=True)
     st.download_button("📥 Descargar análisis completo CSV", df.to_csv(index=False).encode("utf-8-sig"),
                        f"analisis_robot_{datetime.now():%Y%m%d_%H%M}.csv", "text/csv")
@@ -111,16 +111,17 @@ if results:
     selection = st.selectbox("Selecciona una acción", [r["Símbolo"] for r in results])
     chosen = next(r for r in results if r["Símbolo"] == selection)
     a, b, c, d = st.columns(4)
-    a.metric("Cierre", f"${chosen['Cierre USD']:,.2f}")
-    b.metric("Soporte", f"${chosen['Soporte USD']:,.2f}")
-    c.metric("Resistencia", f"${chosen['Resistencia USD']:,.2f}" if chosen["Resistencia USD"] else "Sin techo claro")
-    d.metric("Entrada sugerida", f"${chosen['Entrada sugerida USD']:,.2f}" if chosen["Entrada sugerida USD"] else "NO OPERAR")
+    currency = chosen["Moneda"]
+    a.metric("Cierre", f"${chosen['Cierre']:,.2f} {currency}")
+    b.metric("Soporte", f"${chosen['Soporte']:,.2f} {currency}")
+    c.metric("Resistencia", f"${chosen['Resistencia']:,.2f} {currency}" if chosen["Resistencia"] else "Sin techo claro")
+    d.metric("Entrada sugerida", f"${chosen['Entrada sugerida']:,.2f} {currency}" if chosen["Entrada sugerida"] else "NO OPERAR")
     st.line_chart(chosen["_series"].tail(90), use_container_width=True)
     if chosen["Señal"] == "VIGILAR ENTRADA":
-        st.success(f"Entrada condicional: ${chosen['Entrada sugerida USD']:.2f} USD | Objetivo +1% bruto: ${chosen['Objetivo +1% USD']:.2f} USD | Stop teórico: ${chosen['Stop USD']:.2f} USD | Relación B/R: {chosen['Riesgo/beneficio']:.2f}. Solo vigilar si hay retroceso y confirmación de rebote.")
+        st.success(f"Entrada condicional: ${chosen['Entrada sugerida']:.2f} {currency} | Objetivo +1% bruto: ${chosen['Objetivo +1%']:.2f} {currency} | Stop teórico: ${chosen['Stop']:.2f} {currency} | Relación B/R: {chosen['Riesgo/beneficio']:.2f}. Solo vigilar si hay retroceso y confirmación de rebote.")
     else:
         st.warning("NO OPERAR: no hay entrada validada en esta sesión. Precio de referencia NO operable para observar futuros retrocesos: "
-                   f"${chosen['Entrada condicional USD']:.2f} USD. Motivos: {chosen['Condiciones']}")
+                   f"${chosen['Entrada condicional']:.2f} {currency}. Motivos: {chosen['Condiciones']}")
     st.caption(f"Última vela diaria usada: {chosen['Fecha del dato']}. Los cálculos NO incorporan noticias, resultados trimestrales ni eventos premercado. Un gap puede invalidar la entrada y el stop. La ganancia del 1% es BRUTA y las comisiones, spreads e impuestos pueden reducirla o volverla negativa.")
 
 st.divider()

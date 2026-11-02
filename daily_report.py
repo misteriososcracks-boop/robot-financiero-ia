@@ -26,9 +26,11 @@ def make_report():
     rows.sort(key=lambda d: (d["Señal"] == "VIGILAR ENTRADA", d["Puntuación"]), reverse=True)
     for r in rows:
         lines.append(f"{r['Símbolo']} | {r['Señal']} | puntaje {r['Puntuación']}/100 | dato {r['Fecha del dato']}")
-        lines.append(f"  Cierre ${r['Cierre USD']:.2f} | Soporte ${r['Soporte USD']:.2f} | Resistencia {('$%.2f' % r['Resistencia USD']) if r['Resistencia USD'] else 'sin techo confirmado'}")
-        if r["Entrada sugerida USD"]:
-            lines.append(f"  ENTRADA ${r['Entrada sugerida USD']:.2f} | OBJETIVO +1% ${r['Objetivo +1% USD']:.2f} | STOP ${r['Stop USD']:.2f} | R/B {r['Riesgo/beneficio']}")
+        ccy = r["Moneda"]
+        resistance = f"${r['Resistencia']:.2f} {ccy}" if r["Resistencia"] is not None else "sin techo confirmado"
+        lines.append(f"  Cierre ${r['Cierre']:.2f} {ccy} | Soporte ${r['Soporte']:.2f} {ccy} | Resistencia {resistance}")
+        if r["Entrada sugerida"] is not None:
+            lines.append(f"  ENTRADA ${r['Entrada sugerida']:.2f} {ccy} | OBJETIVO +1% ${r['Objetivo +1%']:.2f} {ccy} | STOP ${r['Stop']:.2f} {ccy} | R/B {r['Riesgo/beneficio']}")
         else:
             lines.append(f"  SIN ENTRADA. Motivo: {r['Condiciones']}")
         lines.append("")
