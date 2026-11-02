@@ -1,173 +1,138 @@
-"""Primera página del Robot Financiero: análisis educativo de acciones."""
-
+"""Robot Financiero — beta pública: análisis educativo de símbolos configurables."""
+import re
 from datetime import datetime
 
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 
+DEFAULTS = ["MSFT", "QQQ", "NVDA", "GOOGL", "AMZN", "SPY", "VTI", "AAPL"]
+RISK = {"Conservador": 0.005, "Moderado": 0.01, "Alto": 0.015}
 
-SYMBOLS = ["MSFT", "QQQ", "NVDA", "GOOGL", "AMZN", "SPY", "VTI", "AAPL"]
+st.set_page_config(page_title="Robot Financiero IA — Beta", page_icon="📈", layout="wide")
+st.title("📈 Robot Financiero IA")
+st.caption("Beta pública | Análisis técnico de acciones y ETF en dólares estadounidenses")
+st.info("Herramienta educativa con reglas matemáticas. No utiliza aún un modelo de IA predictiva ni ejecuta órdenes. Un puntaje alto no es una probabilidad de ganancia.")
 
-st.set_page_config(page_title="Robot Financiero", page_icon="📈", layout="wide")
-st.title("Robot Financiero")
-st.caption("Escáner de prueba · acciones y ETF de Estados Unidos")
-st.info(
-    "Esta primera versión usa reglas matemáticas, no un modelo de IA entrenado. "
-    "Muestra escenarios educativos, no órdenes ni recomendaciones de compra."
-)
+with st.form("analisis"):
+    modo = st.radio("¿Qué quieres analizar?", ["Una acción o ETF", "Comparar varios símbolos"], horizontal=True)
+    simbolo = st.text_input("Escribe el símbolo de la acción o ETF", value="NVDA", help="Ejemplos: AAPL, TSLA, MSFT, NVDA, SPY").strip().upper()
+    varios = st.text_input("Símbolos para comparar, separados por comas", value=", ".join(DEFAULTS), help="Ejemplo: AAPL, MSFT, NVDA, TSLA") if modo == "Comparar varios símbolos" else ""
+    c1, c2 = st.columns(2)
+    with c1:
+        capital = st.number_input("Capital simulado (MXN)", min_value=1000.0, max_value=100000000.0, value=10000.0, step=1000.0)
+    with c2:
+        riesgo = st.selectbox("Nivel de riesgo", list(RISK))
+    enviado = st.form_submit_button("🔎 Analizar", type="primary")
 
-with st.form("configuracion"):
-    capital = st.number_input(
-        "Capital disponible (MXN)", min_value=1000.0, max_value=100000000.0,
-        value=10000.0, step=1000.0
-    )
-    riesgo = st.selectbox("Nivel de riesgo", ["Conservador", "Moderado", "Alto"])
-    enviado = st.form_submit_button("Analizar acciones")
+
+def validar_simbolos():
+    raw = [simbolo] if modo == "Una acción o ETF" else varios.split(",")
+    symbols = list(dict.fromkeys(s.strip().upper() for s in raw if s.strip()))
+    if not symbols:
+        raise ValueError("Escribe al menos un símbolo de bolsa.")
+    if len(symbols) > 12:
+        raise ValueError("Para evitar sobrecarga, analiza hasta 12 símbolos a la vez.")
+    for s in symbols:
+        if not re.fullmatch(r"[A-Z0-9^][A-Z0-9.^=-]{0,14}", s):
+            raise ValueError(f"Símbolo no válido: {s}. Usa el ticker bursátil, por ejemplo TSLA.")
+    return symbols
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def descargar_datos():
-    # Se usan cierres ajustados por dividendos y desdoblamientos.
-    precios = yf.download(
-        SYMBOLS, period="6mo", interval="1d", auto_adjust=True,
-        group_by="ticker", progress=False, threads=True, timeout=10
-    )
-    cambio = yf.download(
-        "MXN=X", period="5d", interval="1d", auto_adjust=True,
-        progress=False, timeout=10
-    )
-    return precios, cambio
+def precios_historicos(symbol):
+    return yf.download(symbol, period="1y", interval="1d", auto_adjust=True, progress=False, threads=False, timeout=15)
 
 
-def serie_por_simbolo(datos, simbolo):
-    if not isinstance(datos.columns, pd.MultiIndex):
-        return None
-    if simbolo in datos.columns.get_level_values(0):
-        return datos[simbolo].dropna(subset=["Close"])
-    if simbolo in datos.columns.get_level_values(1):
-        return datos.xs(simbolo, axis=1, level=1).dropna(subset=["Close"])
-    return None
+@st.cache_data(ttl=1800, show_spinner=False)
+def tipo_cambio_mxn():
+    data = yf.download("MXN=X", period="5d", interval="1d", auto_adjust=True, progress=False, threads=False, timeout=15)
+    if data.empty:
+        raise ValueError("No se pudo consultar el tipo de cambio USD/MXN.")
+    close = data["Close"]
+    if isinstance(close, pd.DataFrame):
+        close = close.iloc[:, 0]
+    rate = pd.to_numeric(close, errors="coerce").dropna()
+    if rate.empty or float(rate.iloc[-1]) <= 0:
+        raise ValueError("El tipo de cambio disponible no es válido.")
+    return float(rate.iloc[-1])
 
 
-def ultimo_numero(columna):
-    valores = pd.to_numeric(columna, errors="coerce").dropna()
-    return float(valores.iloc[-1]) if len(valores) else None
-
-
-def calcular_candidatos(precios, tipo_cambio):
-    candidatos = []
-    for simbolo in SYMBOLS:
-        tabla = serie_por_simbolo(precios, simbolo)
-        if tabla is None or len(tabla) < 51:
-            continue
-        cierre = pd.to_numeric(tabla["Close"], errors="coerce").dropna()
-        alto = pd.to_numeric(tabla["High"], errors="coerce")
-        bajo = pd.to_numeric(tabla["Low"], errors="coerce")
-        if len(cierre) < 51:
-            continue
-        precio = float(cierre.iloc[-1])
-        cambio_20d = (precio / float(cierre.iloc[-21]) - 1) * 100
-        media_20 = float(cierre.tail(20).mean())
-        media_50 = float(cierre.tail(50).mean())
-        anterior = cierre.shift(1)
-        rango = pd.concat(
-            [alto - bajo, (alto - anterior).abs(), (bajo - anterior).abs()],
-            axis=1,
-        ).max(axis=1)
-        atr = float(rango.tail(14).mean())
-        if not pd.notna(atr) or atr <= 0 or precio <= 0:
-            continue
-        # Puntuación explícita y sencilla; no es una probabilidad de ganancia.
-        puntuacion = max(
-            0, min(100, round(
-                50 + max(-15, min(15, cambio_20d)) * 1.5
-                + (15 if precio > media_20 else -15)
-                + (10 if media_20 > media_50 else -10)
-            ))
-        )
-        stop = max(0.01, precio - 2 * atr)
-        candidatos.append({
-            "Símbolo": simbolo,
-            "Precio USD": precio,
-            "Cambio 20 días %": cambio_20d,
-            "Puntuación": puntuacion,
-            "Tendencia": "Alcista" if precio > media_20 > media_50 else "Sin confirmar",
-            "Stop orientativo USD": stop,
-            "Distancia al stop MXN": (precio - stop) * tipo_cambio,
-            "Fecha de datos": str(cierre.index[-1].date()),
-        })
-    return sorted(candidatos, key=lambda fila: fila["Puntuación"], reverse=True)
+def analizar(symbol, mxn_usd):
+    data = precios_historicos(symbol)
+    if data.empty:
+        raise ValueError("sin datos de precio; revisa si existe el símbolo")
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.get_level_values(0)
+    needed = ["Close", "High", "Low"]
+    if not all(c in data.columns for c in needed):
+        raise ValueError("faltan precios necesarios para el análisis")
+    prices = data[needed].apply(pd.to_numeric, errors="coerce").dropna()
+    if len(prices) < 51:
+        raise ValueError("historial insuficiente (se necesitan 51 sesiones)")
+    close, high, low = prices["Close"], prices["High"], prices["Low"]
+    current = float(close.iloc[-1]); previous = close.shift(1)
+    sma20 = float(close.tail(20).mean()); sma50 = float(close.tail(50).mean())
+    change20 = 100 * (current / float(close.iloc[-21]) - 1)
+    tr = pd.concat([high-low, (high-previous).abs(), (low-previous).abs()], axis=1).max(axis=1)
+    atr = float(tr.tail(14).mean())
+    if current <= 0 or not pd.notna(atr) or atr <= 0:
+        raise ValueError("precio o volatilidad inválidos")
+    score = int(max(0, min(100, round(50 + max(-15, min(15, change20))*1.5 + (15 if current>sma20 else -15) + (10 if sma20>sma50 else -10)))))
+    stop = max(0.01, current - 2*atr)
+    distance = (current-stop)*mxn_usd
+    per_trade_risk = capital*RISK[riesgo]
+    price_mxn = current*mxn_usd
+    shares = max(0.0, min(capital*0.20/price_mxn, per_trade_risk/distance if distance>0 else 0, capital/price_mxn))
+    return {
+        "Símbolo": symbol,
+        "Puntuación (0-100)": score,
+        "Tendencia": "Alcista" if current>sma20>sma50 else "Sin confirmar",
+        "Precio (USD)": round(current, 2),
+        "Cambio 20 sesiones (%)": round(change20, 2),
+        "Media 20 (USD)": round(sma20, 2),
+        "Media 50 (USD)": round(sma50, 2),
+        "ATR 14 (USD)": round(atr, 2),
+        "Stop orientativo (USD)": round(stop, 2),
+        "Fracciones simuladas": round(shares, 4),
+        "Capital simulado (MXN)": round(shares*price_mxn, 2),
+        "Pérdida orientativa al stop (MXN)": round(shares*distance, 2),
+        "Fecha del dato": str(close.index[-1].date()),
+        "Cierre": close,
+    }
 
 
 if enviado:
-    with st.spinner("Descargando precios y calculando escenarios…"):
-        try:
-            datos, datos_cambio = descargar_datos()
-            cambio_cierre = datos_cambio["Close"]
-            if isinstance(cambio_cierre, pd.DataFrame):
-                cambio_cierre = cambio_cierre.iloc[:, 0]
-            tipo_cambio = ultimo_numero(cambio_cierre)
-            if tipo_cambio is None or tipo_cambio <= 0:
-                raise ValueError("No se pudo obtener el tipo de cambio USD/MXN.")
-            candidatos = calcular_candidatos(datos, tipo_cambio)
-            if not candidatos:
-                raise ValueError("No llegaron suficientes datos de precios para analizar.")
-        except Exception as exc:
-            st.error(f"No se pudo completar el análisis: {exc}")
+    try:
+        symbols = validar_simbolos()
+        with st.spinner("Consultando precios y calculando indicadores..."):
+            usd_mxn = tipo_cambio_mxn()
+            results, errors = [], []
+            for sym in symbols:
+                try:
+                    results.append(analizar(sym, usd_mxn))
+                except Exception as e:
+                    errors.append(f"{sym}: {e}")
+        for e in errors:
+            st.warning(e)
+        if not results:
+            st.error("No fue posible analizar ningún símbolo. Revisa los códigos o intenta más tarde.")
             st.stop()
-
-    riesgo_por_operacion = {
-        "Conservador": 0.005, "Moderado": 0.01, "Alto": 0.015
-    }[riesgo]
-    st.success(f"Análisis terminado · datos hasta {max(c['Fecha de datos'] for c in candidatos)}")
-    st.write(
-        f"Tipo de cambio consultado: **{tipo_cambio:.2f} MXN por USD**. "
-        f"Riesgo máximo teórico por operación: **{capital * riesgo_por_operacion:,.2f} MXN**."
-    )
-    st.caption(
-        "La fecha corresponde al último cierre disponible. Los datos pueden tener retraso; "
-        "confirma precio y tipo de cambio antes de cualquier decisión."
-    )
-
-    restante = capital
-    filas = []
-    for candidato in candidatos[:5]:
-        precio_mxn = candidato["Precio USD"] * tipo_cambio
-        limite_por_posicion = capital * 0.20
-        distancia = candidato["Distancia al stop MXN"]
-        limite_por_riesgo = (
-            capital * riesgo_por_operacion / distancia if distancia > 0 else 0.0
-        )
-        fracciones = max(
-            0.0, min(limite_por_posicion / precio_mxn,
-                     limite_por_riesgo, restante / precio_mxn)
-        )
-        costo = fracciones * precio_mxn
-        restante -= costo
-        filas.append({
-            "Símbolo": candidato["Símbolo"],
-            "Puntuación (reglas)": candidato["Puntuación"],
-            "Tendencia": candidato["Tendencia"],
-            "Cambio 20 días": f"{candidato['Cambio 20 días %']:+.2f}%",
-            "Precio USD": f"{candidato['Precio USD']:.2f}",
-            "Stop orientativo USD": f"{candidato['Stop orientativo USD']:.2f}",
-            "Fracción teórica": f"{fracciones:.3f}",
-            "Capital teórico MXN": f"{costo:,.2f}",
-            "Pérdida al stop MXN": f"{fracciones * candidato['Distancia al stop MXN']:,.2f}",
-        })
-
-    st.subheader("Oportunidades según las reglas")
-    st.dataframe(pd.DataFrame(filas), hide_index=True, use_container_width=True)
-    st.metric("Capital sin asignar (escenario)", f"${restante:,.2f} MXN")
-    st.caption(
-        "Se calculan fracciones teóricas, que tu bróker puede no permitir. "
-        "El stop es 2 × ATR(14), una estimación de volatilidad; una salida real "
-        "puede ocurrir a otro precio. La puntuación sólo ordena candidatos."
-    )
-    st.download_button(
-        "Descargar tabla CSV",
-        pd.DataFrame(filas).to_csv(index=False).encode("utf-8-sig"),
-        file_name=f"robot_financiero_{datetime.now():%Y%m%d}.csv",
-        mime="text/csv",
-    )
+        st.success(f"Análisis completado · Tipo de cambio consultado: {usd_mxn:.2f} MXN/USD")
+        if modo == "Una acción o ETF":
+            r = results[0]
+            a,b,c = st.columns(3)
+            a.metric("Precio (USD)", f"${r['Precio (USD)']:,.2f}", f"{r['Cambio 20 sesiones (%)']:+.2f}% / 20 sesiones")
+            b.metric("Puntuación por reglas", f"{r['Puntuación (0-100)']}/100")
+            c.metric("Tendencia", r["Tendencia"])
+            st.line_chart(r["Cierre"].rename("Cierre ajustado (USD)"))
+            st.write(f"**Stop orientativo:** ${r['Stop orientativo (USD)']:,.2f} USD · **Capital simulado:** ${r['Capital simulado (MXN)']:,.2f} MXN · **Pérdida estimada al stop:** ${r['Pérdida orientativa al stop (MXN)']:,.2f} MXN")
+        else:
+            st.subheader("Comparación de acciones y ETF")
+        rows = [{k:v for k,v in r.items() if k!="Cierre"} for r in results]
+        df = pd.DataFrame(rows).sort_values("Puntuación (0-100)", ascending=False)
+        st.dataframe(df, hide_index=True, use_container_width=True)
+        st.download_button("Descargar resultados CSV", df.to_csv(index=False).encode("utf-8-sig"), file_name=f"analisis_financiero_{datetime.now():%Y%m%d}.csv", mime="text/csv")
+        st.caption("Los datos pueden tener retrasos. El stop es una referencia basada en 2 × ATR(14), no una orden ni un límite de pérdida garantizado. El tamaño simulado admite fracciones de acciones que algunos brókeres no permiten. El puntaje solo resume las reglas técnicas, no pronostica rendimientos.")
+    except Exception as e:
+        st.error(str(e))
